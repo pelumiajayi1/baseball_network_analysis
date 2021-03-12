@@ -1,0 +1,235 @@
+rm(list = ls(all = TRUE))
+library(igraph)
+library(data.table)
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(sqldf)
+library(psych)
+setwd("C:\\Users\\pelum\\OneDrive - Emory University\\Fall 20'\\Social Networks\\Final Project")
+
+#This is a network of steroid usage among professional baseball players, generated from information from the Mitchell Report, published in 2007. In the first file, players are linked to the chemical providers they purchased performance-enhancing drugs from. In the second file, players are linked to each other if they purchased performance-enhancing drugs from the same supplier (you could also make a similar transformation to get the relationships between providers). You could combine this data with information on what team each player is on and the location of the steroid provides to trade the flow of drugs and the spread of steroid use through the league. 
+
+# -----------------------------------------------------------------------
+#summary stats
+history = fread("PlayerHistory.csv")
+summary(history)
+hist(history$Salary)
+plot(history$team_win, history$Salary)
+plot(history$bb, history$Salary)
+plot(history$hr, history$Salary)
+#------------------------------------------------------------------------
+
+supplier_edges = fread("Player and provider network2.csv")
+# check data structure
+supplier_edges
+
+long <-   gather(supplier_edges, 
+                    Supplier, #melting all rows 
+                    Ties,
+                    BALCO:Kirk_Radomski,
+                    factor_key = TRUE) 
+View(long)
+names(long)[names(long) == "V1"] <- "Player"
+
+
+# data is in edge list format with player sending tie and provider receiving a tie
+# when number is 0, no tie exists
+# get rid of 0s to make the network of existing ties:
+
+# reduce to non-zero edges and build a graph object
+nonzero_edges = long[long$Ties >0,]
+nonzero_edges
+
+full_network = graph.data.frame(nonzero_edges) 
+# using graph.data.frame retains the edge types as edge attributes
+
+#------------------------------------------------------------------------
+```{r}
+# keep the plot handy to visually verify the stats; USE this graph
+plot(full_network, vertex.size=8, vertex.label=V(full_network)$name, edge.arrow.size = 0.2, layout=layout.fruchterman.reingold,main='Player Provider Relationship')
+
+#this is a disconnected network 
+```
+
+
+# removing isolates before centrality calculations
+# can remove with similar syntax as deleting edges with particular attributes. in this case, isolates in either network will have a degree of 0
+full_network = delete.vertices(full_network, V(full_network)[degree(full_network)==0])
+
+# can write a function to get all of the network stats at once and put into a table
+getNetStats=function(net)
+{
+  deg_in = degree(net, mode = "in")
+  deg_out = degree(net, mode = "out")
+  prank = page_rank(net)$vector # page_rank creates a list object with some other items in it, we just want the actual scores, which are contained in the object called "vector"
+  id=V(net)$name
+  stats= as.data.table(list(id = id, deg_in = deg_in, deg_out = deg_out, 
+  prank = prank))
+  return(stats)
+}
+netstats_provider = getNetStats(full_network)
+ #kirk has highest pagerank
+```{r}
+netstats_provider
+```
+
+
+```{r}
+# reordering the ties to analyze based on measure 
+netstats_provider[order(-deg_in)] #kirk has highest indegree showing most people came to him for their drugs then greg anderson he has 8 then balco and palm beach have 6
+```
+ 
+```{r}
+netstats_provider[order(-deg_out)] #jose canseco has highest outdegree which means he went to 4 separate providers... he's a junkie lol, david bell has 3
+```
+
+```{r}
+netstats_provider[order(-prank)] #doesn't tell us anything different 
+
+```
+
+#------------------------------------------------------------------------
+#introducing player history
+hist_2003 = history[history$`Year ID`==2003,]
+teams = hist_2003[,c("first_name_last_name","teams")]
+#teams = teams[!duplicated(teams)]
+
+long2 = sqldf("select * from long inner join teams on long.Player = teams.first_name_last_name")
+
+team_provider = long2[, c(1,5,2,3)]
+team_provider = aggregate(Ties ~ teams + Supplier, data = team_provider, sum)
+existing_edges = team_provider[team_provider$Ties >0,]
+existing_network = graph.data.frame(existing_edges)
+plot(existing_network, vertex.size=8, vertex.label=V(existing_network)$name, edge.arrow.size = 0.2, layout=layout.fruchterman.reingold,main='Team Provider Relationship')
+
+
+netstats_team = getNetStats(existing_network)
+netstats_team #kirk has highest pagerank
+netstats_team[order(-deg_in)] #outdegree counts how many different providers that team has used NOT the frequency that team went to each provider based on results would be interested in seeing atlanta braves, philly, ny, sanfran, team and player results on tableau
+
+#------------------------------------------------------------------------------------------
+
+#figure out if can do strong ties
+# # use mean to indicate if tie is strong 
+# strong = team_provider$Ties > mean(team_provider$Ties[team_provider$Ties > 0])
+# # add new attribute to network
+# existing_network2 = set_edge_attr(existing_network, "strong", index = E(existing_network), strong == TRUE)
+# 
+# # structure graph
+# E(existing_network2)$color = c("black", "red")[as.factor(E(existing_network2)$strong)]
+# plot(existing_network2,vertex.label=V(existing_network2)$name,layout=layout.fruchterman.reingold, vertex.label.color="black",vertex.size = 12, edge.arrow.size=.3,edge.curved=FALSE)
+
+### Graph didn't work as expected but can look at table to assess which provider has strong ties to the team since it is aggregated by sum 
+
+# ------------------------------------------------------------------------------
+#figure out if can do colors 
+# so we get a bunch of possible ways to do this with the indexing
+# color is a special attribute that corresponds to what will be shown in the plot (like weight, more on this below)
+existing = team_provider[team_provider$Ties >0,]
+V(existing)$color = c("light blue", "red")[as.factor(V(existing)$teams)]
+
+#or adding it as a vertex attribute this way
+set.vertex.attribute(g3, "color", index = V(g3), c("light blue", "red")[as.factor(V(g3)$gender)])
+
+# or adding it through vertex.color in the plot
+plot(g3, vertex.color = c("light blue", "red")[as.factor(V(g3)$gender)])
+
+# or creating a specific color object like above
+color = c("light blue", "red")[as.factor(V(g3)$gender)]
+V(g3)$color = color
+
+# or calling the color object in the plotting function
+plot(g3, vertex.color = color)
+
+
+
+
+# -------------------------------------------------------------------------------
+
+
+#do some regression and predictions; t value anything greater that 2 or less than -2, for p value less than 0.05 (meaning there is some statistical significance)
+fitlinear1 <- lm(history$Salary~ history$Height + history$Weight +history$team_win + history$team_lost + history$team_rank)
+summary(fitlinear1)
+
+
+fitlinear2 <- lm(history$Salary~ +history$team_win + history$team_lost + history$team_rank)
+summary(fitlinear2)
+
+fitlinear3 <- lm(history$Salary~ +history$team_win +history$Weight + history$`Year ID`)
+summary(fitlinear3) 
+
+fitlinear4 <- lm(history$Salary~ +history$team_rank +history$Weight + history$`Year ID`)
+summary(fitlinear4)
+
+fitlinear5 <- lm(history$Salary~ +history$team_win +history$Weight + history$`Year ID` + history$`Team ID`)
+summary(fitlinear5) # BEST RESULTS 30% of variation explained
+history$predict <-  predict.lm(fitlinear5)
+history$resid <- resid(fitlinear5)
+
+
+#last want to see if any teams had relationships and went to the same provider
+
+player_edges = fread("Player network.csv")
+
+p_long <-   gather(player_edges, 
+                 To, #melting all rows 
+                 Ties,
+                 2:72,
+                 factor_key = TRUE) 
+View(p_long)
+names(p_long)[names(p_long) == "V1"] <- "From_P1"
+names(p_long)[names(p_long) == "To"] <- "To_P2"
+
+plong2 = sqldf("select * from p_long inner join teams on p_long.From_P1 = teams.first_name_last_name")
+names(plong2)[names(plong2)== "teams"]<- "From_team"
+plong2 = sqldf("select * from plong2 inner join teams on plong2.To_P2 = teams.first_name_last_name")
+names(plong2)[names(plong2)== "teams"]<- "To_team"
+plong2 = plong2[,c(5,7,3)]
+
+plong2 = aggregate(Ties ~ From_team + To_team, data = plong2, sum)
+existing_players = plong2[plong2$Ties >0,]
+existing_players = existing_players[existing_players$From_team != existing_players$To_team,]
+player_network = graph.data.frame(existing_players)
+plot(player_network, vertex.size=5, vertex.label=V(player_network)$name, edge.arrow.size = 0.01, layout=layout.fruchterman.reingold,main='Teams Relationship')
+
+netstats_team = getNetStats(player_network)
+netstats_team[order(-deg_in)]
+
+####additional analysis##################################
+# summary(plm(hr ~ l_rain + l_adj_rain, data = districts_adjrain, effect = "twoways", model = "within", index = "district"))
+# 
+# fitAll <- glm(R ~ G + AB + H + X2B + X3B + HR + RBI + SB + CS + BB + SO + IBB + HBP + SH + SF + GIDP , data = train, family = "poisson")
+
+complete_team = unique(teams$teams)
+
+#assumption 2001-2007 is when teams began using steroids
+library(dplyr)
+team_history = fread("Team_history.csv")
+
+team_history = team_history %>% filter (year >=2001 & year <=2007)
+
+detach(team_history)
+attach(team_history)
+m1 <- lm(rank ~ w + r +ab+h+double+triple+hr+bb+so+sb+cs+hbp+sf+ra+er+era+cg+sho+sv+ipouts+ha+hra+bba+soa+e+dp+fp+bpf+ppf+factor(Steroid_usage) + factor(year))
+
+summary(m1)
+
+summary(lm(rank ~ w + r +ab+h+double+triple+hr+bb+so+sb+sho+sv+ha+hra+e+dp+bpf+ppf+factor(Steroid_usage) + year))
+
+summary(lm(rank ~ w + r +ab+h+double+hr+bb+sb+sho+sv+e+dp+bpf+ppf+Steroid_usage + year))
+
+summary(lm(rank ~ w + r +ab+h+double+hr+bb+sb+sv+e+dp+bpf+ppf+Steroid_usage + year))
+
+```{r}
+summary(lm(hr ~ r +h+double+triple+bb+so+sb+hbp+sf+er+era))
+```
+```{r}
+summary(lm(hr ~ r +h+double+triple+bb+so+sb+hbp+sf+er+era+ factor(team_id)))
+```
+
+
+
+#we tried to run regressions on rank, steroid usage and hr but hr is only one that had statistical significance
+summary(lm(Steroid_usage ~ r +h+double+triple+bb+so+sb+hbp+sf+er+era))
+        
